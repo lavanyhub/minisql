@@ -1,0 +1,95 @@
+===================================================================
+ MiniSQL — live demo run (examples/demo.sql)
+ engine: C++ VM + B+ tree  |  front-end: Python SQL compiler
+===================================================================
+
+Table 'users' created.
+1 row inserted.
+1 row inserted.
+1 row inserted.
+1 row inserted.
+1 row inserted.
+Table 'depts' created.
+1 row inserted.
+1 row inserted.
++----+-------+-----+------+
+| id | name  | age | dept |
++----+-------+-----+------+
+| 1  | Alice | 30  | 10   |
+| 2  | Bob   | 25  | 20   |
+| 3  | Carol | 40  | 10   |
+| 4  | Dave  | 35  | 20   |
+| 5  | Eve   | 28  | 10   |
++----+-------+-----+------+
+5 row(s).
+[index] B+ tree seek on age > 30 -> 2 row(s)
++-------+-----+
+| name  | age |
++-------+-----+
+| Carol | 40  |
+| Dave  | 35  |
++-------+-----+
+2 row(s).
+[index] B+ tree seek on age >= 28 -> 4 row(s)
++----+-------+-----+------+
+| id | name  | age | dept |
++----+-------+-----+------+
+| 3  | Carol | 40  | 10   |
+| 4  | Dave  | 35  | 20   |
+| 1  | Alice | 30  | 10   |
+| 5  | Eve   | 28  | 10   |
++----+-------+-----+------+
+4 row(s).
++------+-------+
+| dept | count |
++------+-------+
+| 10   | 3     |
+| 20   | 2     |
++------+-------+
+2 row(s).
++------+---------+
+| dept | avg_age |
++------+---------+
+| 10   | 32.6667 |
++------+---------+
+1 row(s).
++----+-------+-----+------+-----------+-------------+
+| id | name  | age | dept | depts.did | depts.dname |
++----+-------+-----+------+-----------+-------------+
+| 1  | Alice | 30  | 10   | 10        | Engineering |
+| 2  | Bob   | 25  | 20   | 20        | Sales       |
+| 3  | Carol | 40  | 10   | 10        | Engineering |
+| 4  | Dave  | 35  | 20   | 20        | Sales       |
+| 5  | Eve   | 28  | 10   | 10        | Engineering |
++----+-------+-----+------+-----------+-------------+
+5 row(s).
+1 row(s) updated.
++-------+-----+
+| name  | age |
++-------+-----+
+| Carol | 41  |
++-------+-----+
+1 row(s).
+1 row(s) deleted.
++----+-------+-----+------+
+| id | name  | age | dept |
++----+-------+-----+------+
+| 1  | Alice | 30  | 10   |
+| 3  | Carol | 41  | 10   |
+| 4  | Dave  | 35  | 20   |
+| 5  | Eve   | 28  | 10   |
++----+-------+-----+------+
+4 row(s).
+
+===================================================================
+ INDEX BENCHMARK (200k rows, 20k lookups)
+===================================================================
+N = 200000 rows, Q = 20000 lookups
+(checksums so the compiler can't delete the loops: 1918644368 21935 21935)
+-----------------------------------------------
+linear scan   : 1011.23 ms
+B+ tree       : 47.923 ms   (21.1012x faster than scan)
+hash map      : 1.455 ms   (fastest for point, but no range queries)
+
+Takeaway: B+ tree gives near-hash point speed AND ordered range
+scans (WHERE age BETWEEN ..), which the hash index cannot do.

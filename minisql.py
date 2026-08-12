@@ -26,7 +26,11 @@ import shlex
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = os.path.join(HERE, "minisql")          # the compiled C++ binary
+# On Windows the compiled binary is "minisql.exe"; on Linux/Mac it's "minisql".
+# Prefer whichever one actually exists next to this script.
+_exe = os.path.join(HERE, "minisql.exe")
+_plain = os.path.join(HERE, "minisql")
+ENGINE = _exe if os.path.exists(_exe) else _plain
 DATA_DIR = os.path.join(HERE, "data")
 UNIT = "\x1f"                                    # list separator inside one arg
 

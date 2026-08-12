@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <climits>
+#include <unordered_map>
 
 namespace minisql {
 
@@ -159,6 +160,13 @@ void VM::opProject(const std::vector<std::string>& a) {
 
 void VM::opJoin(const std::vector<std::string>& a) {
     // JOIN <name> <leftcol> <rightcol> <type>   type = inner | right
+    //
+    // HASH JOIN instead of the old nested-loop join.
+    //   Nested loop: for every left row, scan every right row  -> O(n * m)
+    //   Hash join:   build a hash map of the right table once  -> O(n + m)
+    // For 10,000 x 10,000 rows that's the difference between ~100,000,000
+    // comparisons and ~20,000 — this is the single biggest win for scaling
+    // JOINs to larger tables.
     Table rt = Table::loadFromDisk(dataDir_, a[0]);
     const std::string& type = a[3];
 
@@ -168,26 +176,31 @@ void VM::opJoin(const std::vector<std::string>& a) {
     int rci = rt.columnIndex(a[2]);
     if (lci < 0 || rci < 0) throw std::runtime_error("JOIN column not found");
 
-    // build the combined schema: left columns, then right columns prefixed with
-    // "<table>." to avoid name clashes
     Schema ns = cur_.schema;
     for (const auto& c : rt.schema) ns.push_back({a[0] + "." + c.name, c.type});
 
+    // Build phase: hash every right-table row by its join-key string, once.
+    // (Values are compared as strings here; INT columns were already
+    // normalized to plain digit strings by the storage layer, so equal
+    // numbers produce equal strings — e.g. no "007" vs "7" mismatch.)
+    std::unordered_multimap<std::string, size_t> rightIndex;
+    rightIndex.reserve(rt.rows.size() * 2);
+    for (size_t j = 0; j < rt.rows.size(); ++j)
+        rightIndex.emplace(rt.rows[j][rci], j);
+
     std::vector<Row> out;
     std::vector<bool> rightMatched(rt.rows.size(), false);
+
+    // Probe phase: for each left row, one hash lookup finds all matches.
     for (const auto& lr : cur_.rows) {
-        bool matched = false;
-        for (size_t j = 0; j < rt.rows.size(); ++j) {
-            ColType ty = cur_.schema[lci].type;
-            if (compareTyped(lr[lci], rt.rows[j][rci], ty) == 0) {
-                Row row = lr;
-                for (const auto& v : rt.rows[j]) row.push_back(v);
-                out.push_back(row);
-                rightMatched[j] = true;
-                matched = true;
-            }
+        auto range = rightIndex.equal_range(lr[lci]);
+        for (auto it = range.first; it != range.second; ++it) {
+            size_t j = it->second;
+            Row row = lr;
+            for (const auto& v : rt.rows[j]) row.push_back(v);
+            out.push_back(row);
+            rightMatched[j] = true;
         }
-        (void)matched;
     }
     // RIGHT JOIN: include right rows that never matched, padding left side null
     if (type == "right") {
@@ -220,17 +233,31 @@ void VM::opGroup(const std::vector<std::string>& a) {
         for (int i = 0; i < static_cast<int>(cur_.schema.size()); ++i)
             if (cur_.schema[i].name == acol) ai = i;
 
-    // preserve group insertion order
-    std::vector<std::string> order;
-    std::vector<std::vector<double>> nums;  // numeric values per group
+    // Group rows using a hash map instead of a linear "have we seen this key
+    // before?" scan. The old version searched the whole `order` list for
+    // every row (O(n * g) — g = number of distinct groups); with a hash map
+    // each row is placed in O(1) average time (O(n) total). On a table with
+    // many distinct group values this is a big difference.
+    std::vector<std::string> order;                  // preserves first-seen order
+    std::vector<std::vector<double>> nums;            // numeric values per group
     std::vector<long long> counts;
+    std::unordered_map<std::string, int> slotOf;      // key -> index into order/nums/counts
+    slotOf.reserve(cur_.rows.size());
     auto keyOf = [&](const Row& r) { return gi >= 0 ? r[gi] : std::string("(all)"); };
 
     for (const auto& r : cur_.rows) {
         std::string k = keyOf(r);
-        int slot = -1;
-        for (int i = 0; i < static_cast<int>(order.size()); ++i) if (order[i] == k) slot = i;
-        if (slot < 0) { order.push_back(k); nums.push_back({}); counts.push_back(0); slot = order.size() - 1; }
+        auto it = slotOf.find(k);
+        int slot;
+        if (it == slotOf.end()) {
+            slot = static_cast<int>(order.size());
+            slotOf.emplace(k, slot);
+            order.push_back(k);
+            nums.emplace_back();
+            counts.push_back(0);
+        } else {
+            slot = it->second;
+        }
         counts[slot]++;
         if (ai >= 0) nums[slot].push_back(std::atof(r[ai].c_str()));
     }
