@@ -38,12 +38,35 @@ a planner that turns SQL into an operation plan, and an executor that runs it.
 
 - `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`
 - `WHERE` with `=  !=  <  <=  >  >=` on INT (numeric) and TEXT (lexicographic)
-- **B+ tree index seek** — automatically used for integer comparisons; supports
-  point lookups *and* range scans
-- `INNER JOIN` and `RIGHT JOIN ... ON`
-- `GROUP BY` with `COUNT / SUM / AVG / MIN / MAX`, and `HAVING`
+- `WHERE ... AND ... OR ...` — full boolean expressions with correct SQL
+  precedence (AND binds tighter than OR), e.g.
+  `WHERE age > 30 AND dept = 10 OR name = 'Bob'`
+- **B+ tree index seek** — automatically used for a single integer comparison;
+  supports point lookups *and* range scans
+- `INNER JOIN` and `RIGHT JOIN ... ON` — implemented as a **hash join**
+  (O(n+m), not the naive O(n×m) nested loop)
+- `GROUP BY` with `COUNT / SUM / AVG / MIN / MAX`, and `HAVING` — grouping
+  uses a hash map, not a linear re-scan per row
 - `ORDER BY ... ASC|DESC`
 - Type checking on insert (an INT column rejects non-integers)
+
+## Tests
+
+This isn't just "it ran without crashing" — there's a real automated test
+suite with actual pass/fail assertions:
+
+- `tests/bptree_test.cpp` — unit tests for the B+ tree itself (point lookup,
+  duplicate keys, range scans, and correctness after hundreds of node splits)
+- `tests/test_engine.py` — end-to-end tests that check the *answers* are
+  correct: WHERE/AND/OR, JOIN, GROUP BY/HAVING, ORDER BY, UPDATE, DELETE, and
+  type-checking on INSERT
+
+```bash
+g++ -std=c++17 -O2 tests/bptree_test.cpp -I src -o tests/bptree_test && ./tests/bptree_test
+python3 -m unittest discover -s tests -v
+```
+
+Both run automatically on every push — see the CI badge above.
 
 ## Requirements
 

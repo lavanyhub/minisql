@@ -14,16 +14,23 @@
 
 namespace minisql {
 
-static const char UNIT = '\x1f';   // separates list items packed into one arg
+static const char UNIT  = '\x1f';   // separates list items packed into one arg
+static const char COND  = '\x1e';   // separates conditions inside one AND-group
+static const char GROUP = '\x1d';   // separates AND-groups (OR'd together)
+
+// generic "split string on one separator byte" used by several packed formats
+static std::vector<std::string> splitChar(const std::string& s, char sep) {
+    std::vector<std::string> out;
+    if (s.empty()) return out;
+    std::stringstream ss(s);
+    std::string t;
+    while (std::getline(ss, t, sep)) out.push_back(t);
+    return out;
+}
 
 // split "a\x1fb\x1fc" -> [a,b,c]
 static std::vector<std::string> splitUnit(const std::string& s) {
-    std::vector<std::string> out;
-    std::stringstream ss(s);
-    std::string t;
-    while (std::getline(ss, t, UNIT)) out.push_back(t);
-    if (s.empty()) return {};
-    return out;
+    return splitChar(s, UNIT);
 }
 
 // split "a,b,c" -> [a,b,c] (trimmed)
@@ -110,20 +117,49 @@ void VM::opSeek(const std::vector<std::string>& a) {
 
 // -------- FILTER / PROJECT --------------------------------------------------
 
+// A single condition: which column, which operator, which literal value.
+struct Condition { int colIndex; ColType type; std::string op; std::string value; };
+
 void VM::opFilter(const std::vector<std::string>& a) {
-    // FILTER <col> <op> <value>
-    int ci = -1;
-    for (int i = 0; i < static_cast<int>(cur_.schema.size()); ++i)
-        if (cur_.schema[i].name == a[0]) ci = i;
-    if (ci < 0) throw std::runtime_error("Unknown column in WHERE: " + a[0]);
-    ColType ty = cur_.schema[ci].type;
+    // FILTER <packed-where-expression>
+    //
+    // The expression is a list of AND-groups, OR'd together:
+    //     group0_cond0 AND group0_cond1   OR   group1_cond0
+    // Packed as:  GROUP-separated groups, each group is COND-separated
+    // conditions, each condition is UNIT-separated (col, op, value).
+    //
+    // A row survives if it satisfies EVERY condition in AT LEAST ONE group
+    // — that's exactly what "(a AND b) OR c" means.
+    std::vector<std::vector<Condition>> groups;
+    for (const auto& groupStr : splitChar(a[0], GROUP)) {
+        std::vector<Condition> conds;
+        for (const auto& condStr : splitChar(groupStr, COND)) {
+            auto parts = splitUnit(condStr);
+            if (parts.size() != 3) throw std::runtime_error("Malformed WHERE condition");
+            int ci = -1;
+            for (int i = 0; i < static_cast<int>(cur_.schema.size()); ++i)
+                if (cur_.schema[i].name == parts[0]) ci = i;
+            if (ci < 0) throw std::runtime_error("Unknown column in WHERE: " + parts[0]);
+            conds.push_back({ci, cur_.schema[ci].type, parts[1], parts[2]});
+        }
+        groups.push_back(conds);
+    }
 
     std::vector<Row> keptRows;
     std::vector<int> keptIds;
     for (size_t r = 0; r < cur_.rows.size(); ++r) {
-        long long c = compareTyped(cur_.rows[r][ci], a[2], ty);
-        if (applyOp(a[1], c)) {
-            keptRows.push_back(cur_.rows[r]);
+        const Row& row = cur_.rows[r];
+        bool rowMatches = false;
+        for (const auto& group : groups) {           // OR across groups
+            bool groupMatches = true;
+            for (const auto& c : group) {             // AND within a group
+                long long cmp = compareTyped(row[c.colIndex], c.value, c.type);
+                if (!applyOp(c.op, cmp)) { groupMatches = false; break; }
+            }
+            if (groupMatches) { rowMatches = true; break; }
+        }
+        if (rowMatches) {
+            keptRows.push_back(row);
             if (r < cur_.rowIds.size()) keptIds.push_back(cur_.rowIds[r]);
         }
     }
@@ -306,7 +342,7 @@ void VM::opOrder(const std::vector<std::string>& a) {
     int ci = -1;
     for (int i = 0; i < static_cast<int>(cur_.schema.size()); ++i)
         if (cur_.schema[i].name == a[0]) ci = i;
-    if (ci < 0) return;
+    if (ci < 0) throw std::runtime_error("Unknown column in ORDER BY: " + a[0]);
     ColType ty = cur_.schema[ci].type;
     bool desc = (a.size() > 1 && a[1] == "desc");
     std::stable_sort(cur_.rows.begin(), cur_.rows.end(),

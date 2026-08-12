@@ -189,6 +189,51 @@ Both fixes keep the exact same results — I re-ran the full demo after making
 them and got identical output — they're just faster under the hood, which
 matters once the data gets big.
 
+## Two more upgrades: AND/OR, and real tests
+
+### 1. WHERE now supports AND / OR
+
+Before, you could only filter on one condition at a time, like `WHERE age > 30`.
+Now you can combine conditions:
+
+```sql
+SELECT name FROM users WHERE age > 30 AND dept = 10;
+SELECT name FROM users WHERE name = 'Bob' OR name = 'Dave';
+SELECT name FROM users WHERE age > 30 AND dept = 10 OR name = 'Bob';
+```
+
+That last one follows the same rule as real SQL and normal math: **AND binds
+tighter than OR**, so it's read as `(age > 30 AND dept = 10) OR name = 'Bob'`,
+not left-to-right. The parser builds this correctly by parsing "groups of AND"
+first, then joining those groups with OR — this mirrors how a calculator
+respects `×` before `+`.
+
+### 2. A real automated test suite (not just "did it crash")
+
+Before, the only proof the project worked was a demo script that printed
+output for you to eyeball. That catches "it crashed" but not "it gave the
+wrong answer."
+
+Now there are two test files that actually **assert** the correct result and
+fail loudly if it's wrong:
+
+- `tests/bptree_test.cpp` — tests the B+ tree in total isolation: does
+  `find()` return the right row after 500 scattered inserts and many internal
+  splits? Does a range query return exactly the rows in range, no more, no
+  less?
+- `tests/test_engine.py` — tests the whole engine end to end: create a known
+  dataset, run a query, and check the exact rows that came back are the ones
+  that should have come back.
+
+**These tests actually caught a real bug while I was building them.**
+`SELECT name FROM users ORDER BY age DESC` was silently not sorting, because
+the code was deleting the `age` column (to only keep `name`) *before* trying
+to sort by it — so the sort had nothing to sort with, and gave up silently
+with no error. A demo script wouldn't have caught this unless you happened to
+manually check the exact order by eye. A test with a real assertion caught it
+immediately. This is the entire reason automated tests matter more than "I
+ran it once and it looked fine."
+
 ## What else could be improved (future ideas)
 
 Being upfront about the current limits, in case you want to keep building:

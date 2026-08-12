@@ -32,7 +32,9 @@ _exe = os.path.join(HERE, "minisql.exe")
 _plain = os.path.join(HERE, "minisql")
 ENGINE = _exe if os.path.exists(_exe) else _plain
 DATA_DIR = os.path.join(HERE, "data")
-UNIT = "\x1f"                                    # list separator inside one arg
+UNIT  = "\x1f"   # separates col/op/value inside ONE condition
+COND  = "\x1e"   # separates conditions inside one AND-group
+GROUP = "\x1d"   # separates AND-groups (the groups are OR'd together)
 
 # ---------------------------------------------------------------------------
 # 1. TOKENIZER  — turn raw SQL text into a list of tokens
@@ -153,11 +155,38 @@ class Parser:
         return Insert(table, vals)
 
     def _condition(self):
-        # <col> <op> <value>
+        # a single test: <col> <op> <value>, e.g.  age > 25
         col = self.eat_word()
         _, op = self.next()
         val = self.eat_word()
         return (col, op, val)
+
+    def _and_group(self):
+        # one or more conditions chained with AND: age > 25 AND dept = 10
+        # ALL of these must be true for a row to match this group.
+        conds = [self._condition()]
+        while True:
+            k, v = self.peek()
+            if v and v.upper() == "AND":
+                self.next()
+                conds.append(self._condition())
+            else:
+                break
+        return conds
+
+    def _where_expr(self):
+        # AND-groups chained with OR: (age > 25 AND dept = 10) OR name = Bob
+        # A row matches if ANY ONE of the AND-groups matches in full.
+        # This gives correct SQL precedence: AND binds tighter than OR.
+        groups = [self._and_group()]
+        while True:
+            k, v = self.peek()
+            if v and v.upper() == "OR":
+                self.next()
+                groups.append(self._and_group())
+            else:
+                break
+        return groups
 
     def p_select(self):
         self.kw("SELECT")
@@ -197,7 +226,7 @@ class Parser:
                 lc = lc.split(".")[-1]; rc2 = rc.split(".")[-1]
                 join = (jtable, lc, rc2, jtype)
             elif u == "WHERE":
-                self.next(); where = self._condition()
+                self.next(); where = self._where_expr()
             elif u == "GROUP":
                 self.next(); self.kw("BY"); group = self.eat_word()
             elif u == "HAVING":
@@ -219,7 +248,7 @@ class Parser:
         col = self.eat_word(); self.next(); val = self.eat_word()
         where = None
         k, v = self.peek()
-        if v and v.upper() == "WHERE": self.next(); where = self._condition()
+        if v and v.upper() == "WHERE": self.next(); where = self._where_expr()
         return Update(table, col, val, where)
 
     def p_delete(self):
@@ -227,12 +256,37 @@ class Parser:
         table = self.eat_word()
         where = None
         k, v = self.peek()
-        if v and v.upper() == "WHERE": self.next(); where = self._condition()
+        if v and v.upper() == "WHERE": self.next(); where = self._where_expr()
         return Delete(table, where)
 
 # ---------------------------------------------------------------------------
 # 4. COMPILER  — walk the AST and emit bytecode instructions
 # ---------------------------------------------------------------------------
+def encode_where(groups):
+    """Pack a where-expression (list of AND-groups, OR'd together) into a
+    single bytecode argument the C++ VM can parse back apart.
+
+    groups looks like:  [ [(col,op,val), (col,op,val)], [(col,op,val)] ]
+                           \\___ AND-group 0 ___/          \\_ AND-group 1 _/
+    meaning:  group0_cond0 AND group0_cond1   OR   group1_cond0
+
+    Separators (all non-printable, so they can never collide with real data):
+        UNIT  (\\x1f) between col / op / value inside one condition
+        COND  (\\x1e) between conditions inside one AND-group
+        GROUP (\\x1d) between AND-groups (the groups are OR'd)
+    """
+    group_strs = []
+    for group in groups:
+        cond_strs = [UNIT.join([c, op, v]) for c, op, v in group]
+        group_strs.append(COND.join(cond_strs))
+    return GROUP.join(group_strs)
+
+def is_trivial_condition(where):
+    """True if `where` is just ONE condition with no AND/OR — the only shape
+    simple enough to route through the B+ tree index (SEEK) instead of a
+    full scan + filter."""
+    return where and len(where) == 1 and len(where[0]) == 1
+
 def compile_ast(node):
     out = []
     def emit(*parts): out.append("\t".join(parts))
@@ -247,31 +301,31 @@ def compile_ast(node):
     elif isinstance(node, Delete):
         emit("SCAN", node.table)
         if node.where:
-            c, op, v = node.where
-            emit("FILTER", c, op, v)
+            emit("FILTER", encode_where(node.where))
         emit("DELETE", node.table)
 
     elif isinstance(node, Update):
         emit("SCAN", node.table)
         if node.where:
-            c, op, v = node.where
-            emit("FILTER", c, op, v)
+            emit("FILTER", encode_where(node.where))
         emit("UPDATE", node.table, node.setcol, node.setval)
 
     elif isinstance(node, Select):
-        # choose an index seek when filtering an INT column with a comparison;
-        # otherwise a full scan. (The engine builds the B+ tree for SEEK.)
+        # choose an index seek when filtering an INT column with a single
+        # simple comparison and no AND/OR; otherwise a full scan + filter.
+        # (The engine builds the B+ tree for SEEK.) WHERE with AND/OR always
+        # needs to check every row's full expression, so it falls back to
+        # SCAN + FILTER — that's a correctness requirement, not laziness.
         used_seek = False
-        if node.where and not node.join:
-            c, op, v = node.where
+        if node.where and not node.join and is_trivial_condition(node.where):
+            c, op, v = node.where[0][0]
             if op in ("=", "<", "<=", ">", ">=") and v.lstrip("-").isdigit():
                 emit("SEEK", node.table, c, op, v)
                 used_seek = True
         if not used_seek:
             emit("SCAN", node.table)
             if node.where:
-                c, op, v = node.where
-                emit("FILTER", c, op, v)
+                emit("FILTER", encode_where(node.where))
         if node.join:
             jt, lc, rc, jtype = node.join
             emit("JOIN", jt, lc, rc, jtype)
@@ -282,11 +336,18 @@ def compile_ast(node):
             if node.having:
                 op, v = node.having
                 emit("HAVING", op, v)
+            if node.order:
+                emit("ORDER", node.order[0], node.order[1])
         else:
+            # IMPORTANT: sort BEFORE projecting columns away. ORDER BY is
+            # allowed to reference a column that isn't in the SELECT list
+            # (e.g. "SELECT name FROM users ORDER BY age") — if we projected
+            # first, the "age" column would already be gone and the sort
+            # would have nothing to sort by.
+            if node.order:
+                emit("ORDER", node.order[0], node.order[1])
             proj = "*" if (not node.cols or node.cols == ["*"]) else ",".join(node.cols)
             emit("PROJECT", proj)
-        if node.order:
-            emit("ORDER", node.order[0], node.order[1])
         emit("OUTPUT")
 
     return "\n".join(out)
