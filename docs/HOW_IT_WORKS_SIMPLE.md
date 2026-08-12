@@ -208,6 +208,28 @@ Being upfront about the current limits, in case you want to keep building:
 Mentioning these honestly in an interview is actually a good sign — it shows
 you understand the trade-offs you made, not just that you copied code.
 
+## How does someone who won't run the code know it actually works?
+
+This is a real problem: a recruiter or HR person looking at your GitHub isn't
+going to download your project and type build commands. So how do they know
+it's not just code that looks nice but is actually broken?
+
+**The answer: a build badge.** I set up something called **GitHub Actions** —
+think of it as a robot that lives on GitHub. Every single time you push new
+code, that robot automatically:
+
+1. Downloads your code fresh, exactly like a stranger would
+2. Tries to compile it
+3. Runs your demo and checks nothing crashes
+4. Puts a green "passing" checkmark (or red "failing" X) right at the top of
+   your README
+
+That checkmark is visible the second anyone opens your repo — no setup, no
+commands, nothing to run. It's proof, not a claim. This is the same thing
+real companies use before merging code, so it also shows you understand a
+professional software workflow (this is usually called **CI**, short for
+"Continuous Integration").
+
 ## Quick recap — the whole system in 5 lines
 
 1. You type SQL → the Python front-end reads and understands it.

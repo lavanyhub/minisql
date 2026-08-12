@@ -1,0 +1,37 @@
+# GitHub Actions workflow — proves the project actually builds and runs.
+#
+# This runs automatically every time code is pushed to GitHub. It:
+#   1. Compiles the C++ engine
+#   2. Runs the full demo SQL script through it
+#   3. Fails loudly if anything breaks
+#
+# The result shows up as a green "passing" or red "failing" badge on the
+# README — visible to anyone who opens the repo, no setup required on their
+# end. This is the standard way software projects prove "this actually
+# works" without asking someone to run it themselves.
+
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Compile the C++ engine
+        run: g++ -std=c++17 -Wall -Wextra -O2 src/main.cpp src/table.cpp src/vm.cpp -o minisql
+
+      - name: Run the full demo script (smoke test)
+        run: python3 minisql.py examples/demo.sql
+
+      - name: Compile and run the B+ tree benchmark
+        run: |
+          g++ -std=c++17 -O2 bench/bench.cpp -I src -o bench/bench
+          ./bench/bench

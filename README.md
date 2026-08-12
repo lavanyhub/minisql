@@ -1,5 +1,13 @@
 # MiniSQL — a relational query engine built from scratch
 
+![Build and Test](https://github.com/lavanyhub/minisql/actions/workflows/build.yml/badge.svg)
+
+The badge above is not decoration — it's a live, automatic proof this project
+actually compiles and runs correctly. Every time code is pushed, GitHub
+builds the C++ engine from scratch and runs the full demo script against it.
+If anything breaks, the badge turns red immediately. Click it to see the real
+build logs.
+
 A small but real database engine: you type SQL, it parses it into an AST,
 compiles that to **bytecode**, and a **C++ virtual machine** executes the
 bytecode against flat-file tables — using a hand-written **B+ tree** index for
