@@ -1,0 +1,7 @@
+# MiniSQL front-end (minisql.py) uses ONLY the Python standard library.
+# There are no third-party dependencies to install.
+#
+# System requirements (installed outside pip — see SETUP.md):
+#   - Python 3.8+
+#   - g++ with C++17 support
+#   - make (optional)

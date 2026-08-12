@@ -1,0 +1,14 @@
+# compiled engine binary
+/minisql
+/minisql.exe
+
+# benchmark binary
+/bench/bench
+/bench/bench.exe
+
+# runtime table data
+/data/
+
+# python cache
+__pycache__/
+*.pyc
